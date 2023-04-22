@@ -42,7 +42,7 @@ async def log_request(request: Request, call_next):
     return response
 
 # 初始化redis物件
-r = redis.Redis(host='192.168.0.103', port=6379,
+r = redis.Redis(host=config.redis_host, port=config.redis_port,
                 decode_responses=True)  
                 
 
