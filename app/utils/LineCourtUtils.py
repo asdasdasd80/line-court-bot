@@ -516,7 +516,7 @@ def admin_user_body(r:Redis, groupId):
                         color='#999999',
                     ),
                     TextComponent(
-                        text='#新增管理員 @阿貓 @阿狗',
+                        text='#新增管理員 @小戴 @老天',
                         size='sm',
                         color='#00A600',
                     ),
@@ -552,7 +552,7 @@ def admin_user_body(r:Redis, groupId):
                         color='#999999',
                     ),
                     TextComponent(
-                        text='#移除管理員 @阿貓 @阿狗',
+                        text='#移除管理員 @小戴 @老天',
                         size='sm',
                         color='#00A600',
                     ),
@@ -588,7 +588,7 @@ def admin_user_body(r:Redis, groupId):
                         color='#999999',
                     ),
                     TextComponent(
-                        text='#新增季打 A @阿貓 @阿狗',
+                        text='#新增季打 A @小戴 @老天',
                         size='sm',
                         color='#00A600',
                     ),
@@ -624,7 +624,7 @@ def admin_user_body(r:Redis, groupId):
                         color='#999999',
                     ),
                     TextComponent(
-                        text='#移除季打 A @阿貓 @阿狗',
+                        text='#移除季打 A @小戴 @老天',
                         size='sm',
                         color='#00A600',
                     ),
@@ -912,7 +912,7 @@ def signUpContents(r:Redis, groupId):
             wrap=True
         ),
         TextComponent(
-            text='#代報 A 阿貓 阿狗',
+            text='#代報 A 小戴 老天',
             size='sm',
             weight='bold',
             color='#FF2D2D',
@@ -960,7 +960,7 @@ def signOutContents(r:Redis, groupId):
             wrap=True
         ),
         TextComponent(
-            text='#取消 A 阿貓 阿狗',
+            text='#取消 A 小戴 老天',
             size='sm',
             weight='bold',
             color='#FF2D2D',
