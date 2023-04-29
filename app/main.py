@@ -1,6 +1,5 @@
 import uvicorn
 import redis  
-import json
 from config.logger import logger
 from config import config
 from fastapi import FastAPI, Header, Body, Request, HTTPException
