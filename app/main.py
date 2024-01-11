@@ -105,12 +105,11 @@ def handling_message(event):
             logger.info("replytoken")
             logger.info(replyToken)
 
-            if event.source.type != 'group':
-                raise ValueError('請將機器人邀請至球隊群組內使用，謝謝')
+            # if event.source.type != 'group':
+            #     raise ValueError('請將機器人邀請至球隊群組內使用，謝謝')
                 
             userId = event.source.user_id
             groupId = event.source.group_id
-
             text = event.message.text
 
             if not text.startswith("#"):
@@ -126,12 +125,12 @@ def handling_message(event):
             msg = ''
 
             # 取得群組所有場次
-            courtNos = LineCourtUtils.getAllCourtNos(r, groupId)
+            courtNos = LineCourtUtils.getAllCourtNos(groupId)
 
             if '註冊群組' == text:
-                msg = LineCourtUtils.addGroup(r, groupId, groupName, userId, userName)
+                msg = LineCourtUtils.addGroup(groupId, groupName, userId, userName)
 
-            elif '功能' == text:
+            elif '' == text:
 
                 '''
                 場次資訊:
@@ -162,7 +161,7 @@ def handling_message(event):
                 '''
                 
 
-                msg = LineCourtUtils.func_card(r, groupId)
+                msg = LineCourtUtils.func_card(groupId)
 
                 # template_message = TemplateSendMessage(
                 #     alt_text='CarouselTemplate',
@@ -175,12 +174,12 @@ def handling_message(event):
   
             elif '管理員功能' == text:
                 
-                if LineCourtUtils.needAdminOrError(r, groupId, userId):
-                    msg = LineCourtUtils.admin_func_card(r, groupId)
+                if LineCourtUtils.needAdminOrError(groupId, userId):
+                    msg = LineCourtUtils.admin_func_card(groupId)
                     line_bot_api.reply_message(reply_token=replyToken, messages=msg)
 
             elif text.startswith("新增管理員"):
-                if LineCourtUtils.needAdminOrError(r, groupId, userId):
+                if LineCourtUtils.needAdminOrError(groupId, userId):
                     mentionees = LineCourtUtils.getMentioneesOrError(event)
                     addIds = []
                     addNames = []
@@ -188,40 +187,98 @@ def handling_message(event):
                         addIds.append(mentionee.user_id)
                         addNames.append(line_bot_api.get_group_member_profile(groupId, mentionee.user_id).display_name)
 
-                    msg = LineCourtUtils.addAdmins(r, groupId, addIds, addNames)
+                    msg = LineCourtUtils.addAdmins(groupId, addIds, addNames)
 
             elif text.startswith("移除管理員"):
-                if LineCourtUtils.needAdminOrError(r, groupId, userId):
+                if LineCourtUtils.needAdminOrError(groupId, userId):
                     mentionees = LineCourtUtils.getMentioneesOrError(event)
                     delIds = []
                     for mentionee in mentionees:
                         delIds.append(mentionee.user_id)
-                    msg = LineCourtUtils.removeAdmins(r, line_bot_api, groupId, delIds)
+                    msg = LineCourtUtils.removeAdmins(line_bot_api, groupId, delIds)
 
             elif text.startswith("開場"):
-                if LineCourtUtils.needAdminOrError(r, groupId, userId):
+                if LineCourtUtils.needAdminOrError(groupId, userId):
                     arr = text.split(' ')
-                    courtNo = arr[1]
-                    date = arr[2] 
-                    time = arr[3] 
-                    place = arr[4] 
-                    total = arr[5]
-                    msg = LineCourtUtils.addCourt(r, groupId, courtNo, date, time, place, total)
+                    date = arr[1] 
+                    time = arr[2] 
+                    place = arr[3] 
+                    total = arr[4]
+                    courtCost = arr[5]
+                    price = arr[6]
+                    msg = LineCourtUtils.addCourt(groupId, date, time, place, total, courtCost, price)
 
             elif text.startswith("刪場"):
-                if LineCourtUtils.needAdminOrError(r, groupId, userId):
+                if LineCourtUtils.needAdminOrError(groupId, userId):
                     courtNo = text.replace("刪場", "").replace("-", "").replace(":", "").replace(" ", "").strip()
                     if courtNo:
-                        msg = LineCourtUtils.delCourt(r, groupId, courtNo)
+                        msg = LineCourtUtils.delCourt(groupId, courtNo)
 
             elif text.startswith("清空"):
-                if LineCourtUtils.needAdminOrError(r, groupId, userId):
+                if LineCourtUtils.needAdminOrError(groupId, userId):
                     courtNo = text.replace("清空", "").replace("-", "").replace(":", "").replace(" ", "").strip()
                     if courtNo:
-                        msg = LineCourtUtils.emptyList(r, groupId, courtNo)
+                        msg = LineCourtUtils.emptyList(groupId, courtNo)
+
+            elif text.startswith("完成"):
+                if LineCourtUtils.needAdminOrError(groupId, userId):
+                    courtNo = text.replace("完成", "").replace("-", "").replace(":", "").replace(" ", "").strip()
+                    if courtNo:
+                        msg = LineCourtUtils.finishCourt(groupId, courtNo)
+
+            elif text.startswith("預設名單"):
+                if LineCourtUtils.needAdminOrError(groupId, userId):
+                    text = text.replace("預設名單", "").strip()
+                    if text == '':
+                        # 查詢預設名單
+                        names = r.hget(f"line-court:{groupId}:info", 'defaultNames')
+                        if names:
+                            msg = f"預設名單：{names}"
+                        else:
+                            msg = "尚未新增預設名單"
+                    else:
+                        arr = text.split(' ')
+                        names = []
+                        for name in arr:
+                            names.append(name)
+                        r.hset(f"line-court:{groupId}:info", 'defaultNames', ','.join(names))
+                        msg = f"預設名單：{','.join(names)}"
+
+
+            elif text.startswith("新增預設名單"):
+                if LineCourtUtils.needAdminOrError(groupId, userId):
+                    text = text.replace("新增預設名單", "").strip()
+                    arr = text.split(' ')
+                    names = r.hget(f"line-court:{groupId}:info", 'defaultNames')
+                    if names:
+                        names = names.split(',')
+                    else:
+                        names = []
+
+                    for name in arr:
+                        if name not in names:
+                            names.append(name)
+                    r.hset(f"line-court:{groupId}:info", 'defaultNames', ','.join(names))
+                    msg = f"預設名單：{','.join(names)}"
+            elif text.startswith("刪除預設名單"):
+                if LineCourtUtils.needAdminOrError(groupId, userId):
+                    text = text.replace("刪除預設名單", "").strip()
+                    arr = text.split(' ')
+                    names = r.hget(f"line-court:{groupId}:info", 'defaultNames')
+                    if names:
+                        names = names.split(',')
+                    else:
+                        names = []
+                        
+                    for name in arr:
+                        if name in names:
+                            names.remove(name)
+                            
+                    r.hset(f"line-court:{groupId}:info", 'defaultNames', ','.join(names))
+                    msg = f"預設名單：{','.join(names)}"
 
             elif text.startswith("新增季打"):
-                if LineCourtUtils.needAdminOrError(r, groupId, userId):
+                if LineCourtUtils.needAdminOrError(groupId, userId):
                     text = text.replace("新增季打", "").strip()
                     arr = text.split(' ')
                     for courtNo in arr:
@@ -230,10 +287,10 @@ def handling_message(event):
                             addIds = []
                             for mentionee in mentionees:
                                 addIds.append(mentionee.user_id)
-                            msg = LineCourtUtils.addSeasonList(r, line_bot_api, groupId, courtNo, addIds)
+                            msg = LineCourtUtils.addSeasonList(line_bot_api, groupId, courtNo, addIds)
 
             elif text.startswith("移除季打"):
-                if LineCourtUtils.needAdminOrError(r, groupId, userId):
+                if LineCourtUtils.needAdminOrError(groupId, userId):
                     text = text.replace("移除季打", "").strip()
                     arr = text.split(' ')
                     for courtNo in arr:
@@ -242,22 +299,22 @@ def handling_message(event):
                             delIds = []
                             for mentionee in mentionees:
                                 delIds.append(mentionee.user_id)            
-                            msg = LineCourtUtils.removeSeasonList(r, line_bot_api, groupId, courtNo, delIds)
+                            msg = LineCourtUtils.removeSeasonList(line_bot_api, groupId, courtNo, delIds)
 
             elif '管理員清單' == text:
-                msg = LineCourtUtils.listAdminNames(r, groupId)
+                msg = LineCourtUtils.listAdminNames(groupId)
 
             elif text.startswith("場次資訊"):
                 courtNo = text.replace("場次資訊", "").replace("-", "").replace(":", "").replace(" ", "").strip()
                 if courtNo:
-                    msg = LineCourtUtils.courtInfo(r, line_bot_api, groupId, courtNo)
+                    msg = LineCourtUtils.courtInfo(line_bot_api, groupId, courtNo)
 
             elif all(char in courtNos for char in text):
                 '''
                     自己報名用
                 '''
                 for courtNo in text:
-                    msg += LineCourtUtils.signUp(r, groupId, courtNo, userId, userName)
+                    msg += LineCourtUtils.signUp(line_bot_api, groupId, courtNo, userId, userName)
 
             elif text.startswith("代報"):
                 '''
@@ -270,19 +327,19 @@ def handling_message(event):
                 # 取得場次編號
                 courtNo = arr.pop(0)
 
-                msg = LineCourtUtils.signUpMultiple(r, line_bot_api, groupId, courtNo, arr, userId)
+                msg = LineCourtUtils.signUpMultiple(groupId, courtNo, arr, userId)
 
             elif text.startswith("名單"):
                 courtNo = text.replace("名單", "").replace("-", "").replace(":", "").replace(" ", "").strip()
                 if courtNo:
-                    msg += LineCourtUtils.list(r, line_bot_api, groupId, courtNo)
+                    msg += LineCourtUtils.list(groupId, courtNo)
                     msg += '\n'
-                    msg += LineCourtUtils.waitList(r, line_bot_api, groupId, courtNo)
+                    msg += LineCourtUtils.waitList(groupId, courtNo)
 
             elif text.startswith("季打名單"):
                 courtNo = text.replace("季打名單", "").replace("-", "").replace(":", "").replace(" ", "").strip()
                 if courtNo:
-                    msg = LineCourtUtils.Seasonlist(r, line_bot_api, groupId, courtNo)
+                    msg = LineCourtUtils.Seasonlist(groupId, courtNo)
 
             elif text.startswith("取消"):
                 text = text.replace("取消", "").strip()
@@ -292,18 +349,20 @@ def handling_message(event):
                 if len(arr) == 0:
                     # 沒有輸入名字，取消自己
                     arr.append(userName)
-                    msg = LineCourtUtils.signOut(r, line_bot_api, groupId, courtNo, arr, userId)
+                    msg = LineCourtUtils.signOut(line_bot_api, groupId, courtNo, arr, userId)
                 else:
                     # 取消輸入的名單
-                    msg = LineCourtUtils.signOut(r, line_bot_api, groupId, courtNo, arr, userId)
+                    msg = LineCourtUtils.signOut(line_bot_api, groupId, courtNo, arr, userId)
 
             if msg:
                 line_bot_api.reply_message(reply_token=replyToken, messages=TextSendMessage(text=msg))
 
         except ValueError as ve:
             line_bot_api.reply_message(reply_token=replyToken, messages=TextSendMessage(text=str(ve)))
+            logger.error(ve)
         except Exception as e:
+            logger.error(e)
             raise e
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8100, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)

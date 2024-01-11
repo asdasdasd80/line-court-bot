@@ -1,18 +1,24 @@
 import json
 import codecs
-from redis import Redis
+from config.logger import logger
+from config import config
+from collections import OrderedDict
+import redis  
 from linebot.models import (
     FlexSendMessage, BubbleContainer, BoxComponent, TextComponent, ButtonComponent, SeparatorComponent,
     CarouselTemplate, CarouselColumn, MessageAction ,TextComponent, ButtonComponent, FlexSendMessage,
     CarouselContainer
 )
 
+r = redis.Redis(host=config.redis_host, port=config.redis_port,
+                decode_responses=True)  
+                
 class User():
     def __init__(self, userId, userName):
         self.userId = userId
         self.userName = userName
 
-def addGroup(r:Redis, groupId, groupName, adminUserId, adminUserName):
+def addGroup(groupId, groupName, adminUserId, adminUserName):
     '''
         初始化建立群組
     '''
@@ -27,10 +33,16 @@ def addGroup(r:Redis, groupId, groupName, adminUserId, adminUserName):
     r.hset(key, 'adminIds', json.dumps(adminIds))
     r.hset(key, 'adminNames', json.dumps(adminNames))
     r.hset(key, 'groupName', groupName)
+    
+    key = f'line-court:{groupId}:courtNo'
+    r.hset(key, 'A', '0')
+    r.hset(key, 'B', '0')
+    r.hset(key, 'C', '0')
+
     message = f'新增群組 {groupName} 成功，管理員為 {adminUserName}，請使用"指令"確認功能清單 '
     return message
 
-def addAdmins(r:Redis, groupId, addIds, addNames):
+def addAdmins(groupId, addIds, addNames):
     '''
         新增管理員
     '''
@@ -53,7 +65,7 @@ def addAdmins(r:Redis, groupId, addIds, addNames):
     return '新增管理員成功'
 
 
-def removeAdmins(r:Redis, line_bot_api, groupId, delIds):
+def removeAdmins(line_bot_api, groupId, delIds):
     '''
         移除管理員權限
     '''
@@ -82,7 +94,7 @@ def removeAdmins(r:Redis, line_bot_api, groupId, delIds):
 
 
 
-def listAdminNames(r:Redis, groupId):
+def listAdminNames(groupId):
     '''
         列出管理員姓名清單
     '''
@@ -93,7 +105,7 @@ def listAdminNames(r:Redis, groupId):
     adminNames = json.loads(r.hget(key, 'adminNames'))
     return f'管理員清單： {", " .join(adminNames)}'
 
-def listAdminIds(r:Redis, groupId):
+def listAdminIds(groupId):
     '''
         列出管理員清單
     '''
@@ -105,7 +117,7 @@ def listAdminIds(r:Redis, groupId):
     return adminIds
 
 
-def addCourt(r:Redis, groupId, courtNo, date, time, place, total):
+def addCourt(groupId, date, time, place, total, courtCost, price):
     '''
         新增場次
     '''
@@ -113,18 +125,43 @@ def addCourt(r:Redis, groupId, courtNo, date, time, place, total):
     if r.exists(key) == 0:
         raise ValueError(f'請先註冊群組')
 
+
+    courtNo = getCourtNo(groupId)
+    if courtNo == '':
+        raise ValueError(f'一個群組同時僅能開三個場次，請先刪除場次後再開場')
+        
     key = f'line-court:{groupId}:{courtNo}'
     r.hset(key, 'courtNo', courtNo)
     r.hset(key, 'date', date)
     r.hset(key, 'time', time)
     r.hset(key, 'place', place)
     r.hset(key, 'total', total)
+    r.hset(key, 'courtCost', courtCost)
+    r.hset(key, 'price', price)
     r.hset(key, 'list', '[]')
     r.hset(key, 'waitList', '[]')
     r.hset(key, 'seasonList', '[]')
-    return f'開場成功\n場次代號:{courtNo}\n日期:{date}\n時間:{time}\n地點:{place}\n名額:{total}'
 
-def delCourt(r:Redis, groupId, courtNo):
+    # 自動加入預設清單
+    names = r.hget(f"line-court:{groupId}:info", 'defaultNames')
+    if names:
+        list = []
+        names = names.split(',')
+        for userName in names:
+            if userName.startswith('@'):
+                userName = userName.replace("@", "")
+            user = User('default', userName)
+            list.append(json.loads(json.dumps(user, default=lambda o: o.__dict__)))
+        r.hset(key, 'list', json.dumps(list, default=lambda o: o.__dict__))
+    else:   
+        r.hset(key, 'list', '[]')
+
+    # 將courtNo設定為已使用
+    r.hset(f'line-court:{groupId}:courtNo', courtNo, '1')
+
+    return f'開場成功\n場次代號:{courtNo}\n日期:{date}\n時間:{getTimeDesc(time)}\n地點:{place}\n名額:{total}\n費用:{price}'
+
+def delCourt(groupId, courtNo):
     '''
         刪除場次
     '''
@@ -133,9 +170,37 @@ def delCourt(r:Redis, groupId, courtNo):
         raise ValueError(f'查無場次編號:{courtNo}，請重新確認')
 
     r.delete(key)
+
+    # 將courtNo設定為未使用
+    r.hset(f'line-court:{groupId}:courtNo', courtNo, '0')
+
     return f'刪除場次 {courtNo} 成功'
 
-def courtInfo(r:Redis, line_bot_api, groupId, courtNo):
+def finishCourt(groupId, courtNo):
+    '''
+        完成場次，刪除後回傳相關資訊，方便貼到excel
+    '''
+    key = f'line-court:{groupId}:{courtNo}'
+    if r.exists(key) == 0:
+        raise ValueError(f'查無場次編號:{courtNo}，請重新確認')
+
+    date = r.hget(key, 'date')
+    time = r.hget(key, 'time')
+    hours = int(time.split("-")[1]) - int(time.split("-")[0])
+    price = int(r.hget(key, 'price'))
+    courtCost = int(r.hget(key, 'courtCost'))
+    names = list(groupId, courtNo).replace('\n', ',').rstrip(',')
+    total = len(json.loads(r.hget(key, 'list')))
+    realTotal = total-1 if '烤哥' in names else total
+    income = int(realTotal*price)
+    r.delete(key)
+
+    # 將courtNo設定為未使用
+    r.hset(f'line-court:{groupId}:courtNo', courtNo, '0')
+
+    return f"{date}\n{hours}\n{int(courtCost/hours)}\n{courtCost}\n{total}\n{-1 if '烤哥' in names else ''}\n{realTotal}\n{price}\n{income}\n{income-courtCost}\n{names}"
+
+def courtInfo(line_bot_api, groupId, courtNo):
     '''
         列出所有場次資訊
     '''
@@ -151,32 +216,40 @@ def courtInfo(r:Redis, line_bot_api, groupId, courtNo):
     signList = json.loads(r.hget(key, 'list'))
 
     # 場地資訊
-    msg = (f'場次代號:{courtNo}\n日期:{date}\n時間:{time}\n地點:{place}\n剩餘名額:{total - len(signList)}\n\n')
+    msg = (f'場次代號:{courtNo}\n日期:{date}\n時間:{getTimeDesc(time)}\n地點:{place}\n剩餘名額:{total - len(signList)}\n\n')
 
     # 報名清單
-    msg += list(r, line_bot_api, groupId, courtNo)
+    msg += list(groupId, courtNo)
 
     msg += '\n'
     msg += '\n'
     # 候補清單
-    msg += waitList(r, line_bot_api, groupId, courtNo)
+    msg += waitList(groupId, courtNo)
 
     return msg
 
-def getAllCourtNos(r:Redis, groupId):
+def getAllCourtNos(groupId):
     '''
         取得所有場次代號
     '''
-    keys = r.keys(f'line-court:{groupId}:*')
+    key = f'line-court:{groupId}:courtNo'
+    nos = r.hkeys(key)
     courtNos = []
-    for key in keys:
-        if 'info' not in key:
-            courtNo = r.hget(key, 'courtNo')
-            courtNos.append(courtNo)
-    courtNos.sort()
+    #declare a map,  key = date , value=courtNo
+    ordered_dict = OrderedDict()
+
+    for no in nos:
+        if r.hget(key, no) == '1':
+            ordered_dict[r.hget(f'line-court:{groupId}:{no}', 'date')] = no
+
+
+    sorted_dict = OrderedDict(sorted(ordered_dict.items()))
+
+    for key, value in sorted_dict.items():
+        courtNos.append(value)
     return courtNos
 
-def needAdminOrError(r:Redis, groupId, userId):
+def needAdminOrError(groupId, userId):
     '''
         是否為管理員
     '''
@@ -191,7 +264,7 @@ def needAdminOrError(r:Redis, groupId, userId):
         raise ValueError(f'您沒有管理員權限，請洽群組管理員')
 
 
-def signUp(r:Redis, groupId, courtNo, userId, userName):
+def signUp(line_bot_api, groupId, courtNo, userId, userName):
     '''
         群組成員自行報名
     '''
@@ -202,15 +275,20 @@ def signUp(r:Redis, groupId, courtNo, userId, userName):
     msg = ''
     total = int(r.hget(f'line-court:{groupId}:{courtNo}', 'total'))
     list = json.loads(r.hget(f'line-court:{groupId}:{courtNo}', 'list'))
+    waitList = json.loads(r.hget(f'line-court:{groupId}:{courtNo}', 'waitList'))
     current = len(list)
-    existUser = [user for user in list if user['userId'] == userId and user['userName'] == userName]
-    
-    if len(existUser) > 0:
-        raise ValueError(f'您已在場次 {courtNo} 名單上，若要幫朋友報名請使用 "代報" 功能')
 
+    existUser = [user for user in list if (user['userId'] == userId and user['userName'] == userName) or 
+                 (user['userId'] == 'default' and user['userName'] == userName)]
+    existUser2 = [user for user in waitList if user['userId'] == userId and user['userName'] == userName]
+    
+    if len(existUser) > 0 or len(existUser2) > 0:
+        message = signOut( line_bot_api, groupId, courtNo, [userName], userId)
+        return message
+
+    user = User(userId, userName)
 
     if total - current > 0:
-        user = User(userId, userName)
         list.append(user)
         r.hset(f'line-court:{groupId}:{courtNo}', 'list', json.dumps(list, default=lambda o: o.__dict__))
 
@@ -219,7 +297,6 @@ def signUp(r:Redis, groupId, courtNo, userId, userName):
         else:
             msg = f'{userName} 報名成功，場次 {courtNo} 剩 {total - len(list)} 個名額\n'
     else:
-        waitList = json.loads(r.hget(f'line-court:{groupId}:{courtNo}', 'waitList'))
         waitList.append(user)
         r.hset(f'line-court:{groupId}:{courtNo}', 'waitList', json.dumps(waitList, default=lambda o: o.__dict__))
         msg = f'場次 {courtNo} 已額滿，將您排在候補第{len(waitList)}位\n'
@@ -227,7 +304,7 @@ def signUp(r:Redis, groupId, courtNo, userId, userName):
     return msg
 
 
-def signUpMultiple(r:Redis, line_bot_api, groupId, courtNo, userNames, ownerId):
+def signUpMultiple(groupId, courtNo, userNames, ownerId):
     '''
         一次報名多人
     '''
@@ -260,7 +337,7 @@ def signUpMultiple(r:Redis, line_bot_api, groupId, courtNo, userNames, ownerId):
 
     return msg
 
-def signOut(r:Redis, line_bot_api, groupId, courtNo, delNames, ownerId):
+def signOut(line_bot_api, groupId, courtNo, delNames, ownerId):
     '''
         取消報名
     '''
@@ -270,7 +347,7 @@ def signOut(r:Redis, line_bot_api, groupId, courtNo, delNames, ownerId):
     
     message = ''
     ownerName = getName(line_bot_api, groupId, ownerId)
-    adminIds = listAdminIds(r, groupId)
+    adminIds = listAdminIds( groupId)
     total = int(r.hget(key, 'total'))
     list = json.loads(r.hget(key, 'list'))
 
@@ -280,7 +357,7 @@ def signOut(r:Redis, line_bot_api, groupId, courtNo, delNames, ownerId):
         userName = user['userName']
         userId = user['userId']
         if userName in delNames:
-            if userId != ownerId and ownerId not in adminIds:
+            if userId != ownerId and ownerId not in adminIds and userId != 'default':
                 raise ValueError(f'{userName} 不是由 {ownerName} 協助報名，需本人、協助報名人員或管理員才可取消')
             delUsers.append(user)
 
@@ -308,7 +385,7 @@ def signOut(r:Redis, line_bot_api, groupId, courtNo, delNames, ownerId):
     
 
 
-def emptyList(r:Redis, groupId, courtNo):
+def emptyList(groupId, courtNo):
     '''
         清空場次名單
     '''
@@ -325,7 +402,7 @@ def emptyList(r:Redis, groupId, courtNo):
 
     return f'已清空場次 {courtNo} 的報名及候補清單並自動帶入季打清單'
 
-def addSeasonList(r:Redis, line_bot_api, groupId, courtNo, addIds):
+def addSeasonList(line_bot_api, groupId, courtNo, addIds):
     '''
         新增季打名單
     '''
@@ -352,7 +429,7 @@ def addSeasonList(r:Redis, line_bot_api, groupId, courtNo, addIds):
 
     return f'已將 {", ".join(addNames)} 新增至季打名單'
 
-def removeSeasonList(r:Redis, line_bot_api, groupId, courtNo, delIds):
+def removeSeasonList(line_bot_api, groupId, courtNo, delIds):
     '''
         移除季打名單
     '''
@@ -376,7 +453,7 @@ def removeSeasonList(r:Redis, line_bot_api, groupId, courtNo, delIds):
 
     return f'已將 {", ".join(delNames)} 移出季打名單'
 
-def list(r:Redis, line_bot_api, groupId, courtNo):
+def list(groupId, courtNo):
     '''
         列出場次報名清單
     '''
@@ -391,11 +468,12 @@ def list(r:Redis, line_bot_api, groupId, courtNo):
         names.append(user['userName'])
     
     if len(names) > 0:
-        message = f'報名清單：\n{", ".join(names)}'
+        for name in names:
+            message += f'{name}\n'
 
     return message
 
-def waitList(r:Redis, line_bot_api, groupId, courtNo):
+def waitList(groupId, courtNo):
     '''
         列出場次候補清單
     '''
@@ -415,7 +493,7 @@ def waitList(r:Redis, line_bot_api, groupId, courtNo):
 
     return message
 
-def Seasonlist(r:Redis, line_bot_api, groupId, courtNo):
+def Seasonlist(groupId, courtNo):
     '''
         列出場次季打清單
     '''
@@ -445,7 +523,7 @@ def getMentioneesOrError(event):
     except Exception:
         raise ValueError(f'請使用 tag 方式標記成員')
     
-def admin_func_card(r:Redis, groupId):
+def admin_func_card(groupId):
     
     carousel_contents = []
 
@@ -453,14 +531,14 @@ def admin_func_card(r:Redis, groupId):
     courtBubble = BubbleContainer(
         hero=None,
         size='kilo',
-        body=admin_court_body(r, groupId)
+        body=admin_court_body( groupId)
     )
 
     # 報名
     signUpBubble = BubbleContainer(
         hero=None,
         size='kilo',
-        body=admin_user_body(r, groupId)
+        body=admin_user_body( groupId)
     )
 
     carousel_contents.append(courtBubble)
@@ -473,7 +551,7 @@ def admin_func_card(r:Redis, groupId):
     return message    
 
 
-def admin_user_body(r:Redis, groupId):
+def admin_user_body(groupId):
     box = BoxComponent(
         layout='vertical',
         contents=[
@@ -637,7 +715,7 @@ def admin_user_body(r:Redis, groupId):
 
 
 
-def admin_court_body(r:Redis, groupId):
+def admin_court_body(groupId):
     box = BoxComponent(
         layout='vertical',
         contents=[
@@ -703,41 +781,44 @@ def admin_court_body(r:Redis, groupId):
             ),
             BoxComponent(
                 layout='vertical',
-                contents=emptyBtn(r, groupId)
+                contents=emptyBtn( groupId)
             ),
             SeparatorComponent(
                 margin='15px'
             ),
             BoxComponent(
                 layout='vertical',
-                contents=delBtn(r, groupId)
+                contents=delBtn( groupId)
             ),
         ]
     )
     
     return box
-
-
-def func_card(r:Redis, groupId):
+    
+def func_card(groupId):
     
     carousel_contents = []
 
     # 場次資訊 Bubble
-    infoBubble = BubbleContainer(
-        hero=None,
-        size='kilo',
-        body=infoBody(r, groupId)
-    )
+    # infoBubble = BubbleContainer(
+    #     hero=None,
+    #     size='kilo',
+    #     body=infoBody( groupId)
+    # )
+
+    bubbles = info_bubbles( groupId)
+    for b in bubbles:
+        carousel_contents.append(b)
 
     # 報名功能
-    signUpBubble = BubbleContainer(
-        hero=None,
-        size='kilo',
-        body=signBody(r, groupId)
-    )
+    # signUpBubble = BubbleContainer(
+    #     hero=None,
+    #     size='kilo',
+    #     body=signBody( groupId)
+    # )
 
-    carousel_contents.append(infoBubble)
-    carousel_contents.append(signUpBubble)
+    # carousel_contents.append(infoBubble)
+    # carousel_contents.append(signUpBubble)
 
     contents = CarouselContainer(contents=carousel_contents)
 
@@ -745,44 +826,190 @@ def func_card(r:Redis, groupId):
     message = FlexSendMessage(alt_text='功能選單', contents=contents)
     return message    
 
+def info_bubbles(groupId):
+    infoBubbles = []
 
-def infoBody(r:Redis, groupId):
+    keys = getAllCourtNos(groupId)
+    for courtNo in keys:
+        key = f'line-court:{groupId}:{courtNo}'
+        date = r.hget(key, 'date')
+        time = r.hget(key, 'time')
+        place = r.hget(key, 'place')
+        price = r.hget(key, 'price')
+        list = json.loads(r.hget(f'line-court:{groupId}:{courtNo}', 'list'))
+        waitList = json.loads(r.hget(f'line-court:{groupId}:{courtNo}', 'waitList'))
+        contents = [
+            TextComponent(
+                text=f'🏸{place}',
+                size='md',
+                margin='none',
+                flex=0,
+                weight='bold',
+            ),
+            SeparatorComponent(
+                margin='15px'
+            )
+        ]
+
+        contents.append(
+            TextComponent(
+                text=f'時間：{date} {getTimeDesc(time)}',
+                size='md',
+                margin='none',
+                flex=0,
+            ),
+        )  
+        
+        contents.append(
+            TextComponent(
+                text=f'費用：{price} 元',
+                size='md',
+                margin='none',
+                flex=0,
+            ),
+        )  
+
+        contents.append(
+            TextComponent(
+                text=f'目前 {len(list)} 人',
+                size='md',
+            )
+        )  
+        
+        for user in list:
+            contents.append(
+                TextComponent(
+                    layout='vertical',
+                    text=f'{user["userName"]}',
+                    margin='sm',
+                    action={
+                        'type': 'message',
+                        'label': f'🙋',
+                        'text': f'#取消 {courtNo} {user["userName"]}'},
+                )             
+                # TextComponent(
+                #     text=f'{user["userName"]}',
+                #     size='md',
+                # )
+            )
+
+        if len(waitList) > 0:
+            
+            contents.append(
+                SeparatorComponent(
+                    margin='15px'  
+                )
+            )
+            contents.append(
+                TextComponent(
+                text=f'候補 {len(waitList)} 人',
+                    size='md',
+                )
+            )
+
+            for user in waitList:
+                contents.append(
+                    TextComponent(
+                        text=f'{user["userName"]}',
+                        size='md',
+                    )
+                )
+
+        contents.append(
+            SeparatorComponent(
+                margin='15px'  
+            )
+        )
+
+        contents.append(
+            ButtonComponent(
+                action={
+                    'type': 'message',
+                    'label': f'🙋報名/取消報名',
+                    'text': f'#{courtNo}'
+                }
+            )     
+        )
+
+
+
+        contents.append(
+            ButtonComponent(
+                action={
+                    'type': 'message',
+                    'label': f'🏁結束並統計金額',
+                    'text': f'#完成{courtNo}'
+                }
+            )     
+        )
+
+        contents.append(
+            ButtonComponent(
+                action={
+                    'type': 'message',
+                    'label': f'❌刪除場次',
+                    'text': f'#刪場{courtNo}'
+                }
+            )     
+        )
+
+        infoBubble = BubbleContainer(
+            hero=None,
+            size='kilo',
+            body= BoxComponent(
+                layout='vertical',
+                contents=[
+                    BoxComponent(
+                        layout='vertical',
+                        contents=contents
+                    ),
+                ]
+            )
+        )
+
+
+
+        infoBubbles.append(infoBubble)
+
+    return infoBubbles
+
+def infoBody(groupId):
     box = BoxComponent(
         layout='vertical',
         contents=[
             BoxComponent(
                 layout='vertical',
-                contents=courtInfoContents(r, groupId)
+                contents=courtInfoContents( groupId)
             ),
-            SeparatorComponent(
-                margin='15px'
-            ),
-            BoxComponent(
-                layout='vertical',
-                contents=seasonContents(r, groupId)
-            ),
-            SeparatorComponent(
-                margin='15px'
-            ),
-            BoxComponent(
-                layout='vertical',
-                contents=[
-                    TextComponent(
-                        text='👉管理員清單',
-                        size='lg',
-                        margin='none',
-                        flex=0,
-                        weight='bold',
-                    ),
-                    ButtonComponent(
-                        action={
-                            'type': 'message',
-                            'label': f'管理員清單',
-                            'text': f'#管理員清單'
-                        }
-                    )                         
-                ]
-            ),
+            # SeparatorComponent(
+            #     margin='15px'
+            # ),
+            # BoxComponent(
+            #     layout='vertical',
+            #     contents=seasonContents( groupId)
+            # ),
+            # SeparatorComponent(
+            #     margin='15px'
+            # ),
+            # BoxComponent(
+            #     layout='vertical',
+            #     contents=[
+            #         TextComponent(
+            #             text='👉管理員清單',
+            #             size='lg',
+            #             margin='none',
+            #             flex=0,
+            #             weight='bold',
+            #         ),
+            #         ButtonComponent(
+            #             action={
+            #                 'type': 'message',
+            #                 'label': f'管理員清單',
+            #                 'text': f'#管理員清單'
+            #             }
+            #         )                         
+            #     ]
+            # ),
         ]
     )
     
@@ -790,7 +1017,7 @@ def infoBody(r:Redis, groupId):
 
 
 
-def emptyBtn(r:Redis, groupId):
+def emptyBtn(groupId):
     '''
         取消報名按鈕
     '''
@@ -810,7 +1037,7 @@ def emptyBtn(r:Redis, groupId):
         )
     ]
 
-    keys = getAllCourtNos(r, groupId)
+    keys = getAllCourtNos( groupId)
     for courtNo in keys:
         buttonComponent = ButtonComponent(
             action={
@@ -825,9 +1052,9 @@ def emptyBtn(r:Redis, groupId):
 
     return contents
 
-def delBtn(r:Redis, groupId):
+def delBtn(groupId):
     '''
-        取消報名按鈕
+        刪除場次按鈕
     '''
     contents = [
         TextComponent(
@@ -839,7 +1066,7 @@ def delBtn(r:Redis, groupId):
         )
     ]
 
-    keys = getAllCourtNos(r, groupId)
+    keys = getAllCourtNos( groupId)
     for courtNo in keys:
         buttonComponent = ButtonComponent(
             action={
@@ -855,7 +1082,7 @@ def delBtn(r:Redis, groupId):
 
 
 
-def signBody(r:Redis, groupId):
+def signBody(groupId):
     '''
         我要報名按鈕
     '''
@@ -864,21 +1091,21 @@ def signBody(r:Redis, groupId):
         contents=[
             BoxComponent(
                 layout='vertical',
-                contents=signUpContents(r, groupId)
+                contents=signUpContents( groupId)
             ),
             SeparatorComponent(
                 margin='15px'
             ),
             BoxComponent(
                 layout='vertical',
-                contents=signOutContents(r, groupId)
+                contents=signOutContents( groupId)
             ),
         ]
     )
     return box
 
 
-def signUpContents(r:Redis, groupId):
+def signUpContents(groupId):
     '''
         我要報名按鈕
     '''
@@ -892,7 +1119,7 @@ def signUpContents(r:Redis, groupId):
         )
     ]
 
-    keys = getAllCourtNos(r, groupId)
+    keys = getAllCourtNos( groupId)
     for courtNo in keys:
         buttonComponent = ButtonComponent(
             action={
@@ -927,60 +1154,13 @@ def signUpContents(r:Redis, groupId):
 
 
 
-def signOutContents(r:Redis, groupId):
-    '''
-        取消報名按鈕
-    '''
-    contents = [
-        TextComponent(
-            text='👉取消報名',
-            size='lg',
-            margin='none',
-            flex=0,
-            weight='bold',
-        )
-    ]
-
-    keys = getAllCourtNos(r, groupId)
-    for courtNo in keys:
-        buttonComponent = ButtonComponent(
-            action={
-                'type': 'message',
-                'label': f'取消報名 {courtNo} 場次',
-                'text': f'#取消{courtNo}'
-            }
-        )     
-        contents.append(buttonComponent)        
-
-    contents = contents + [
-        TextComponent(
-            text='若要幫代報的朋友取消報名，可參照格式手動輸入訊息',
-            weight='bold',
-            size='sm',
-            wrap=True
-        ),
-        TextComponent(
-            text='#取消 A 小戴 老天',
-            size='sm',
-            weight='bold',
-            color='#FF2D2D',
-        ),
-        TextComponent(
-            text='各個參數間用空白隔開',
-            size='sm',
-            color='#999999',
-        )
-    ]
-    return contents
-
-
-def courtInfoContents(r:Redis, groupId):
+def courtInfoContents(groupId):
     '''
         場次清單按鈕
     '''
     contents = [
         TextComponent(
-            text='👉場次資訊',
+            text='🏸場次資訊',
             size='lg',
             margin='none',
             flex=0,
@@ -988,7 +1168,7 @@ def courtInfoContents(r:Redis, groupId):
         )
     ]
 
-    keys = getAllCourtNos(r, groupId)
+    keys = getAllCourtNos( groupId)
     for courtNo in keys:
         buttonComponent = ButtonComponent(
             action={
@@ -1003,7 +1183,7 @@ def courtInfoContents(r:Redis, groupId):
 
     return contents
 
-def seasonContents(r:Redis, groupId):
+def seasonContents(groupId):
     '''
         季打名單按鈕
     '''
@@ -1016,7 +1196,7 @@ def seasonContents(r:Redis, groupId):
             weight='bold',
         )
     ]
-    keys = getAllCourtNos(r, groupId)
+    keys = getAllCourtNos( groupId)
     for courtNo in keys:
         buttonComponent = ButtonComponent(
             action={
@@ -1044,3 +1224,28 @@ def genHeaderBox(text):
         ]
     )
     return header
+
+
+def getCourtNo(groupId):
+    '''
+        取得所有場次代號
+    '''
+    key = f'line-court:{groupId}:courtNo'
+    courtNo = ''
+    for cno in r.hkeys(key):
+        if r.hget(key, cno) != '1':
+            courtNo = cno
+            break
+    return courtNo
+
+def getTimeDesc(time):
+    s = time.split("-")[0]
+    e = time.split("-")[1]
+    #檢核是否為數字
+    if s.isdigit() == False or e.isdigit() == False:
+        return time
+
+    s = int(time.split("-")[0])
+    e = int(time.split("-")[1])
+    zone = '早上' if s < 12 else '下午' if s < 18 else '晚上'
+    return f'{zone} {s-12 if s>12 else s}點-{e-12 if e>12 else e}點'
