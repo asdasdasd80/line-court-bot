@@ -840,7 +840,7 @@ def info_bubbles(groupId):
         waitList = json.loads(r.hget(f'line-court:{groupId}:{courtNo}', 'waitList'))
         contents = [
             TextComponent(
-                text=f'🏸{place}',
+                text=f'🏸{courtNo}-{place}',
                 size='md',
                 margin='none',
                 flex=0,
@@ -943,15 +943,15 @@ def info_bubbles(groupId):
             )     
         )
 
-        contents.append(
-            ButtonComponent(
-                action={
-                    'type': 'message',
-                    'label': f'❌刪除場次',
-                    'text': f'#刪場{courtNo}'
-                }
-            )     
-        )
+        # contents.append(
+        #     ButtonComponent(
+        #         action={
+        #             'type': 'message',
+        #             'label': f'❌刪除場次',
+        #             'text': f'#刪場{courtNo}'
+        #         }
+        #     )     
+        # )
 
         infoBubble = BubbleContainer(
             hero=None,

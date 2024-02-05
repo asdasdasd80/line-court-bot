@@ -20,7 +20,7 @@ handler = WebhookHandler(config.line_bot_channel_secret)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['http://localhost:5173', 'http://localhost:3100', 'https://tool.joda.tw'],
+    allow_origins=['http://localhost:5173', 'http://localhost:3100', 'https://tool.yuru.app'],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
